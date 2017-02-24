@@ -49,7 +49,6 @@ type Config struct {
 	Logs struct {
 		Error string
 		Info  string
-		Rpc   string
 	}
 }
 
