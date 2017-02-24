@@ -40,10 +40,6 @@ func main() {
 			Usage: "Strict exit code processing will rise a fatal error if exit code is different from allowed onces.",
 		},
 		cli.StringFlag{
-			Name:  "exchange-name, x",
-			Usage: "Optional queue name to which can be passed in, without needing to define it in config, if set will override config queue name",
-		},
-		cli.StringFlag{
 			Name:  "queue-name, q",
 			Usage: "Optional queue name to which can be passed in, without needing to define it in config, if set will override config queue name",
 		},
