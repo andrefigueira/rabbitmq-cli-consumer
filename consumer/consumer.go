@@ -11,9 +11,10 @@ import (
 	"net/url"
 	"os"
 	"time"
+	"strconv"
 
-	"github.com/ricbra/rabbitmq-cli-consumer/command"
-	"github.com/ricbra/rabbitmq-cli-consumer/config"
+	"github.com/andrefigueira/rabbitmq-cli-consumer/command"
+	"github.com/andrefigueira/rabbitmq-cli-consumer/config"
 	"github.com/streadway/amqp"
 )
 
@@ -38,6 +39,8 @@ type Consumer struct {
 	IncludeMetadata bool
 	StrictExitCode  bool
 	OnFailure       int
+	DeadLetter      bool
+	Retry           int
 }
 
 type Properties struct {
@@ -80,6 +83,17 @@ func (c *Consumer) Consume() {
 
 	c.InfLogger.Println("Succeeded registering consumer.")
 
+	var sendCh *amqp.Channel
+
+	if c.DeadLetter {
+		var err error
+		sendCh, err = c.Connection.Channel()
+		if err != nil {
+			c.ErrLogger.Println("Could not open channel to republish failed jobs %s", err)
+		}
+		defer sendCh.Close()
+	}
+
 	defer c.Connection.Close()
 	defer c.Channel.Close()
 
@@ -95,12 +109,12 @@ func (c *Consumer) Consume() {
 			input := d.Body
 
 			if c.IncludeMetadata {
+				c.InfLogger.Println("reading deliveries")
 				input, err = json.Marshal(&struct {
 					Properties   `json:"properties"`
 					DeliveryInfo `json:"delivery_info"`
 					Body         string `json:"body"`
-				}{
-
+				} {
 					Properties: Properties{
 						Headers:         d.Headers,
 						ContentType:     d.ContentType,
@@ -148,15 +162,66 @@ func (c *Consumer) Consume() {
 				input = b.Bytes()
 			}
 
-			cmd := c.Factory.Create(base64.StdEncoding.EncodeToString(input))
+			if c.DeadLetter {
+				var retryCount int
 
-			exitCode := c.Executer.Execute(cmd)
+				if d.Headers == nil {
+					d.Headers = make(map[string]interface{}, 0)
+				}
 
-			err := c.ack(d, exitCode)
+				retry, ok := d.Headers["retry_count"]
 
-			if err != nil {
-				c.ErrLogger.Fatalf("Message acknowledgement error: %v", err)
-				os.Exit(11)
+				if !ok {
+					retry = "1"
+				}
+
+				c.InfLogger.Println(fmt.Sprintf("retry %s", retry))
+
+				retryCount, err = strconv.Atoi(retry.(string))
+
+				if err != nil {
+					c.ErrLogger.Fatal("could not parse retry header")
+				}
+
+				c.InfLogger.Println(fmt.Sprintf("retryCount : %d max retries: %d", retryCount, c.Retry))
+
+				cmd := c.Factory.Create(base64.StdEncoding.EncodeToString(input))
+
+				if c.Executer.Execute(cmd, d.Body[:]) == 0 {
+					d.Ack(true)
+				} else if retryCount >= c.Retry {
+					d.Nack(true, false)
+				} else {
+					retryCount++
+					d.Headers["retry_count"] = strconv.Itoa(retryCount)
+
+					republish := amqp.Publishing{
+						ContentType:     d.ContentType,
+						ContentEncoding: d.ContentEncoding,
+						Timestamp:       time.Now(),
+						Body:            d.Body,
+						Headers:         d.Headers,
+					}
+
+					err = sendCh.Publish("", c.Queue, false, false, republish)
+
+					if err != nil {
+						c.ErrLogger.Println("error republish %s", err)
+					}
+
+					d.Ack(true)
+				}
+			} else {
+				cmd := c.Factory.Create(base64.StdEncoding.EncodeToString(input))
+
+				exitCode := c.Executer.Execute(cmd, d.Body[:])
+
+				err := c.ack(d, exitCode)
+
+				if err != nil {
+					c.ErrLogger.Fatalf("Message acknowledgement error: %v", err)
+					os.Exit(11)
+				}
 			}
 		}
 	}()
@@ -251,6 +316,34 @@ func New(cfg *config.Config, factory *command.CommandFactory, errLogger, infLogg
 		cfg.Exchange.Type = "direct"
 	}
 
+	var table map[string]interface{}
+	deadLetter := false
+
+	if "" != cfg.Deadexchange.Name {
+		infLogger.Printf("Declaring  deadletter exchange \"%s\"...", cfg.Deadexchange.Name)
+		err = ch.ExchangeDeclare(cfg.Deadexchange.Name, cfg.Deadexchange.Type, cfg.Deadexchange.Durable, cfg.Deadexchange.AutoDelete, false, false, amqp.Table{})
+
+		if nil != err {
+			return nil, errors.New(fmt.Sprintf("Failed to declare exchange: %s", err.Error()))
+		}
+
+		table = make(map[string]interface{}, 0)
+		table["x-dead-letter-exchange"] = cfg.Deadexchange.Name
+		table["x-dead-letter-routing-key"] = cfg.Deadexchange.RoutingKey
+
+		infLogger.Printf("Declaring error queue \"%s\"...", cfg.Deadexchange.Queue)
+		_, err = ch.QueueDeclare(cfg.Deadexchange.Queue, true, false, false, false, amqp.Table{})
+
+		// Bind queue
+		infLogger.Printf("Binding  error queue \"%s\" to dead letter exchange \"%s\"...", cfg.Deadexchange.Queue, cfg.Deadexchange.Name)
+		err = ch.QueueBind(cfg.Deadexchange.Queue, cfg.Deadexchange.RoutingKey, cfg.Deadexchange.Name, false, amqp.Table{})
+
+		if nil != err {
+			return nil, errors.New(fmt.Sprintf("Failed to bind queue to dead-letter exchange: %s", err.Error()))
+		}
+		deadLetter = true
+	}
+
 	// Empty Exchange name means default, no need to declare
 	if "" != cfg.Exchange.Name {
 		infLogger.Printf("Declaring exchange \"%s\"...", cfg.Exchange.Name)
@@ -260,12 +353,23 @@ func New(cfg *config.Config, factory *command.CommandFactory, errLogger, infLogg
 			return nil, errors.New(fmt.Sprintf("Failed to declare exchange: %s", err.Error()))
 		}
 
+		if cfg.QueueSettings.MessageTTL > 0 {
+			table["x-message-ttl"] = int32(cfg.QueueSettings.MessageTTL)
+		}
+
 		// Bind queue
-		infLogger.Printf("Binding queue \"%s\" to exchange \"%s\"...", cfg.RabbitMq.Queue, cfg.Exchange.Name)
+		infLogger.Printf("Declaring queue \"%s\"...with args: %+v", cfg.Queue.Name, table)
+		_, err = ch.QueueDeclare(cfg.RabbitMq.Queue, true, false, false, false, table)
+
+		if nil != err {
+			return nil, errors.New(fmt.Sprintf("Failed to declare queue: %s", err.Error()))
+		}
+
+
 		err = ch.QueueBind(cfg.RabbitMq.Queue, transformToStringValue(cfg.QueueSettings.Routingkey), transformToStringValue(cfg.Exchange.Name), false, nil)
 
 		if nil != err {
-			return nil, errors.New(fmt.Sprintf("Failed to bind queue to exchange: %s", err.Error()))
+			return nil, errors.New(fmt.Sprintf("Failed to bind queue exchange: %s", err.Error()))
 		}
 	}
 
@@ -279,22 +383,23 @@ func New(cfg *config.Config, factory *command.CommandFactory, errLogger, infLogg
 		Executer:    command.New(errLogger, infLogger),
 		Compression: cfg.RabbitMq.Compression,
 		OnFailure:   cfg.RabbitMq.Onfailure,
+		DeadLetter:  deadLetter,
+		Retry:       cfg.Deadexchange.Retry,
 	}, nil
 }
 
 func sanitizeQueueArgs(cfg *config.Config) amqp.Table {
-
 	args := make(amqp.Table)
 
 	if cfg.QueueSettings.MessageTTL > 0 {
 		args["x-message-ttl"] = int32(cfg.QueueSettings.MessageTTL)
 	}
 
-	if cfg.QueueSettings.DeadLetterExchange != "" {
-		args["x-dead-letter-exchange"] = transformToStringValue(cfg.QueueSettings.DeadLetterExchange)
+	if cfg.Deadexchange.Name != "" {
+		args["x-dead-letter-exchange"] = transformToStringValue(cfg.Deadexchange.Name)
 
-		if cfg.QueueSettings.DeadLetterRoutingKey != "" {
-			args["x-dead-letter-routing-key"] = transformToStringValue(cfg.QueueSettings.DeadLetterRoutingKey)
+		if cfg.Deadexchange.RoutingKey != "" {
+			args["x-dead-letter-routing-key"] = transformToStringValue(cfg.Deadexchange.RoutingKey)
 		}
 	}
 

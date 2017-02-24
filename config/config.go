@@ -33,9 +33,23 @@ type Config struct {
 		Type       string
 		Durable    bool
 	}
+	Queue struct {
+		Key  string
+		Name string
+	}
+	Deadexchange struct {
+		Name       string
+		AutoDelete bool
+		Type       string
+		Durable    bool
+		Queue      string
+		Retry      int
+		RoutingKey string
+	}
 	Logs struct {
 		Error string
 		Info  string
+		Rpc   string
 	}
 }
 

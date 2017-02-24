@@ -18,9 +18,13 @@ func New(errLogger, infLogger *log.Logger) *CommandExecuter {
 	}
 }
 
-func (me CommandExecuter) Execute(cmd *exec.Cmd) int {
+func (me CommandExecuter) Execute(cmd *exec.Cmd, body []byte) int {
 	me.infLogger.Println("Processing message...")
+	me.infLogger.Printf("Cmd: %s  params: %s \n", cmd.Path, cmd.Args)
 	out, err := cmd.CombinedOutput()
+
+	//log output php script to info
+	me.infLogger.Printf("Output php: %s\n", string(out[:]))
 
 	if err != nil {
 		me.infLogger.Println("Failed. Check error log for details.")

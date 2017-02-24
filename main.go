@@ -6,9 +6,9 @@ import (
 	"os"
 
 	"github.com/codegangsta/cli"
-	"github.com/ricbra/rabbitmq-cli-consumer/command"
-	"github.com/ricbra/rabbitmq-cli-consumer/config"
-	"github.com/ricbra/rabbitmq-cli-consumer/consumer"
+	"github.com/andrefigueira/rabbitmq-cli-consumer/command"
+	"github.com/andrefigueira/rabbitmq-cli-consumer/config"
+	"github.com/andrefigueira/rabbitmq-cli-consumer/consumer"
 )
 
 func main() {
@@ -39,6 +39,14 @@ func main() {
 			Name:  "strict-exit-code",
 			Usage: "Strict exit code processing will rise a fatal error if exit code is different from allowed onces.",
 		},
+		cli.StringFlag{
+			Name:  "exchange-name, x",
+			Usage: "Optional queue name to which can be passed in, without needing to define it in config, if set will override config queue name",
+		},
+		cli.StringFlag{
+			Name:  "queue-name, q",
+			Usage: "Optional queue name to which can be passed in, without needing to define it in config, if set will override config queue name",
+		},
 	}
 	app.Action = func(c *cli.Context) {
 		if c.String("configuration") == "" && c.String("executable") == "" {
@@ -65,7 +73,11 @@ func main() {
 			logger.Fatalf("Failed creating info log: %s", err)
 		}
 
-		factory := command.Factory(c.String("executable"))
+		if c.String("queue-name") != "" {
+			cfg.RabbitMq.Queue = c.String("queue-name")
+		}
+
+ 		factory := command.Factory(c.String("executable"))
 
 		client, err := consumer.New(cfg, factory, errLogger, infLogger)
 		if err != nil {
