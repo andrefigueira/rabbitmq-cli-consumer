@@ -329,7 +329,10 @@ func New(cfg *config.Config, factory *command.CommandFactory, errLogger, infLogg
 
 		table = make(map[string]interface{}, 0)
 		table["x-dead-letter-exchange"] = cfg.Deadexchange.Name
-		table["x-dead-letter-routing-key"] = cfg.Deadexchange.RoutingKey
+
+		if (cfg.Deadexchange.RoutingKey != "") {
+			table["x-dead-letter-routing-key"] = cfg.Deadexchange.RoutingKey
+		}
 
 		infLogger.Printf("Declaring error queue \"%s\"...", cfg.Deadexchange.Queue)
 		_, err = ch.QueueDeclare(cfg.Deadexchange.Queue, true, false, false, false, amqp.Table{})
