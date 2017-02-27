@@ -203,7 +203,9 @@ func (c *Consumer) Consume() {
 						Headers:         d.Headers,
 					}
 
-					err = sendCh.Publish("", c.Queue, false, false, republish)
+					c.InfLogger.Println("")
+
+					err = sendCh.Publish(d.Exchange, d.RoutingKey, false, false, republish)
 
 					if err != nil {
 						c.ErrLogger.Println("error republish %s", err)
@@ -321,7 +323,14 @@ func New(cfg *config.Config, factory *command.CommandFactory, errLogger, infLogg
 
 	if "" != cfg.Deadexchange.Name {
 		infLogger.Printf("Declaring  deadletter exchange \"%s\"...", cfg.Deadexchange.Name)
-		err = ch.ExchangeDeclare(cfg.Deadexchange.Name, cfg.Deadexchange.Type, cfg.Deadexchange.Durable, cfg.Deadexchange.AutoDelete, false, false, amqp.Table{})
+		err = ch.ExchangeDeclare(
+			cfg.Deadexchange.Name,
+			cfg.Deadexchange.Type,
+			cfg.Deadexchange.Durable,
+			cfg.Deadexchange.AutoDelete,
+			false,
+			false,
+			amqp.Table{})
 
 		if nil != err {
 			return nil, errors.New(fmt.Sprintf("Failed to declare exchange: %s", err.Error()))
@@ -330,7 +339,7 @@ func New(cfg *config.Config, factory *command.CommandFactory, errLogger, infLogg
 		table = make(map[string]interface{}, 0)
 		table["x-dead-letter-exchange"] = cfg.Deadexchange.Name
 
-		if (cfg.Deadexchange.RoutingKey != "") {
+		if cfg.Deadexchange.RoutingKey != "" {
 			table["x-dead-letter-routing-key"] = cfg.Deadexchange.RoutingKey
 		}
 

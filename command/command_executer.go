@@ -33,7 +33,7 @@ func (me CommandExecuter) Execute(cmd *exec.Cmd, body []byte) int {
 
 		if exiterr, ok := err.(*exec.ExitError); ok {
 			if status, ok := exiterr.Sys().(syscall.WaitStatus); ok {
-				return status.ExitStatus();
+				return status.ExitStatus()
 			}
 		}
 
