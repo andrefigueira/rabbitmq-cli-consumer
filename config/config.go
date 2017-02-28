@@ -2,7 +2,6 @@ package config
 
 import (
 	"path/filepath"
-
 	"gopkg.in/gcfg.v1"
 )
 
